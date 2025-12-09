@@ -5,6 +5,12 @@ from pydantic import BaseModel
 from typing import Optional
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
+from database import Base, engine, SessionLocal
+from auth import router as auth_router
+from models import User
+from passlib.context import CryptContext
+from fastapi.middleware.cors import CORSMiddleware
+
 
 # Load environment variables BEFORE importing your logic
 load_dotenv()
@@ -23,6 +29,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(auth_router)
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def create_default_user():
+    db = SessionLocal()
+    if not db.query(User).first():
+        user = User(
+            username="admin",
+            password_hash=pwd_context.hash("admin123")
+        )
+        db.add(user)
+        db.commit()
+    db.close()
+
+
 
 # --- Data Models ---
 class ChatRequest(BaseModel):
@@ -82,5 +105,9 @@ def add_event_endpoint(event: EventData):
             
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+Base.metadata.create_all(bind=engine)
+create_default_user()
+
 
 # Run with: uvicorn main:app --reload
