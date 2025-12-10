@@ -1,150 +1,173 @@
 import os
-import json
 import re
 import sys
+import textwrap
 import google.generativeai as genai
-import textwrap 
 
-# --- Import Dependencies ---
+# ────────────────────────────────────────────────
+# IMPORT RETRIEVER
+# ────────────────────────────────────────────────
 try:
-    from google.colab import userdata
     import retriever as retriever_module
 except ImportError:
-    # Fallback for local testing if not in Colab
+    print("❌ retriever module not found")
+    sys.exit(1)
+
+# ────────────────────────────────────────────────
+# GEMINI CONFIG (OPTIONAL FALLBACK)
+# ────────────────────────────────────────────────
+API_KEY = os.environ.get("GEMINI_API_KEY")
+
+generation_model = None
+if API_KEY:
+    genai.configure(api_key=API_KEY)
+    generation_model = genai.GenerativeModel(
+        "gemini-2.5-flash-preview-09-2025"
+    )
+
+# ────────────────────────────────────────────────
+# FORMATTERS
+# ────────────────────────────────────────────────
+def _format_event_list(rows, label):
+    if not rows or rows[0][0] in {"No results", "Connection error"}:
+        return f"No {label} found."
+
+    output = []
+    output.append(f"📌 {label.title()} ({len(rows)})\n")
+
+    for idx, row in enumerate(rows, start=1):
+        name = row[0]
+        date = row[1]
+
+        output.append(
+            f"{idx}. {name}\n"
+            f"   📅 {date}\n"
+        )
+
+    return "\n".join(output)
+
+def _format_domain_list(rows, label):
+    if not rows or rows[0][0] in {"No results", "Connection error"}:
+        return f"No {label} found."
+
+    output = [f"📌 {label.title()} ({len(rows)})\n"]
+
+    for idx, r in enumerate(rows, start=1):
+        output.append(
+            f"{idx}. {r[0]}\n"
+            f"   🏷 Domain: {r[1]}\n"
+            f"   📅 Date: {r[2]}\n"
+        )
+
+    return "\n".join(output)
+
+# ────────────────────────────────────────────────
+# MAIN HANDLER
+# ────────────────────────────────────────────────
+def handle_user_query(user_question: str) -> str:
+    q = user_question.lower().strip()
+
+    # =====================================================
+    # 1️⃣ LIST ALL EVENTS
+    # =====================================================
+    if (
+        "event" in q
+        and any(w in q for w in {"list", "show", "give", "all"})
+        and not any(w in q for w in {"online", "offline", "hybrid"})
+        and not re.search(r"(19|20)\d{2}", q)
+    ):
+        rows = retriever_module.query_relational_db(
+            """
+            SELECT name_of_event, date_of_event
+            FROM events
+            ORDER BY date_of_event
+            """
+        )
+        return _format_event_list(rows, "all events")
+
+    # =====================================================
+    # 2️⃣ ONLINE / OFFLINE / HYBRID EVENTS
+    # =====================================================
+    for mode in ("online", "offline", "hybrid"):
+        if mode in q and "event" in q:
+            rows = retriever_module.query_relational_db(
+                f"""
+                SELECT name_of_event, date_of_event
+                FROM events
+                WHERE LOWER(mode_of_event) = '{mode}'
+                ORDER BY date_of_event
+                """
+            )
+            return _format_event_list(rows, f"{mode} events")
+
+    # =====================================================
+    # 3️⃣ EVENTS BY YEAR
+    # =====================================================
+    year_match = re.search(r"(19|20)\d{2}", q)
+    if "event" in q and year_match:
+        year = year_match.group()
+
+        rows = retriever_module.query_relational_db(
+            f"""
+            SELECT name_of_event, date_of_event
+            FROM events
+            WHERE EXTRACT(YEAR FROM date_of_event) = {year}
+            ORDER BY date_of_event
+            """
+        )
+        return _format_event_list(rows, f"events in {year}")
+
+    # =====================================================
+    # 4️⃣ DOMAIN FILTER (AI / ML / Web / Cloud etc.)
+    # =====================================================
+    if "event" in q:
+        domain_keywords = {
+            "ai": "AI",
+            "ml": "ML",
+            "data": "DATA",
+            "web": "WEB",
+            "cloud": "CLOUD",
+            "iot": "IOT",
+            "blockchain": "BLOCKCHAIN",
+            "cyber": "CYBER",
+            "robotics": "ROBOTICS",
+        }
+
+        for key, label in domain_keywords.items():
+            if key in q:
+                rows = retriever_module.query_relational_db(
+                    f"""
+                    SELECT name_of_event, event_domain, date_of_event
+                    FROM events
+                    WHERE event_domain ILIKE '%{label}%'
+                    ORDER BY date_of_event
+                    """
+                )
+                return _format_domain_list(rows, f"{label} events")
+
+    # =====================================================
+    # 5️⃣ FALLBACK → SEMANTIC SEARCH
+    # =====================================================
+    if generation_model is None:
+        return "I do not have that information."
+
     try:
-        import retriever as retriever_module
-    except ImportError:
-        print("Error: Required modules not found.")
-        sys.exit(1)
-
-# --- Configuration ---
-# Handle API Key from either Colab Secrets or Environment Variables
-API_KEY = None
-try:
-    API_KEY = userdata.get('GEMINI_API_KEY')
-except:
-    API_KEY = os.environ.get("GEMINI_API_KEY")
-
-if not API_KEY:
-    print("Error: GEMINI_API_KEY not found.")
-
-genai.configure(api_key=API_KEY)
-# Using the preview model as requested
-generation_model = genai.GenerativeModel('gemini-2.5-flash-preview-09-2025')
-
-def parse_json_response(response_text):
-    """Extracts JSON from the LLM's Markdown output."""
-    match = re.search(r"\{.*\}", response_text, re.DOTALL)
-    if not match:
-        return {"intent": "error", "query": "No JSON found"}
-    try:
-        return json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return {"intent": "error", "query": "Invalid JSON"}
-
-def handle_user_query(user_question):
-    """Main Agent Loop."""
-    
-    # --- Step 1: Parse Intent (Gemini Call 1) ---
-    # UPDATED SCHEMA: Matches 'events.csv' exactly now.
-    parsing_prompt = textwrap.dedent(f"""
-    You are a query parsing agent for a university club database.
-    
-    Tools Available:
-    1. Relational DB (PostgreSQL): Use for structured facts (dates, names, counts, collaborations).
-    2. Vector DB (Semantic Search): Use for concepts ("What is...", "Tell me about...").
-
-    --- DATABASE SCHEMA (Table: 'events') ---
-    Columns: [
-        serial_no (INT),
-        name_of_event (TEXT),
-        event_domain (TEXT), 
-        date_of_event (DATE), 
-        time_of_event (TEXT),
-        faculty_coordinators (TEXT), 
-        student_coordinators (TEXT), 
-        venue (TEXT),
-        mode_of_event (TEXT), 
-        registration_fee (TEXT), 
-        speakers (TEXT),
-        perks (TEXT),
-        collaboration (TEXT),  <-- NEW COLUMN ADDED
-        description_insights (TEXT)
-    ]
-    
-    OUTPUT FORMAT: {{"intent": "semantic", "query": "..."}} OR {{"intent": "structured", "query": "SELECT ..."}}
-
-    RULES:
-    1. For Domains (e.g., 'AI events'), query `event_domain`.
-       * CRITICAL: Domains often have spaces around slashes (e.g., 'AI / ML').
-       * Use ILIKE with % wildcards: `event_domain ILIKE '%AI%ML%'`.
-    2. For Facts (Who, When, Count, Collaborations), use SQL.
-       * Example: "List collaborative events" -> `SELECT name_of_event, collaboration FROM events WHERE collaboration IS NOT NULL AND collaboration != 'N/A'`
-    3. For Semantic/Conceptual questions, set intent to 'semantic'.
-       * IMPORTANT: Distill the query to keywords. 
-       * Example: "Did any event mention RAG?" -> query: "RAG"
-    4. SQL Syntax: Use `ILIKE` for text, `EXTRACT(YEAR FROM date_of_event)` for years.
-
-    User Question: "{user_question}"
-    JSON Output:
-    """)
-
-    try:
-        parse_response = generation_model.generate_content(parsing_prompt)
-        parsed_result = parse_json_response(parse_response.text)
+        results = retriever_module.query_vector_db(user_question)
     except Exception as e:
-        return f"Error parsing query: {e}"
+        return f"Error querying database: {e}"
 
-    # --- Step 2: Retrieve Context ---
-    context_text = ""
-    intent = parsed_result.get("intent")
-    query_content = parsed_result.get("query")
-    sql_used = None
+    if results and results[0] not in {"No matches", "Connection error"}:
+        return "\n\n".join(results)
 
-    if intent == "semantic":
-        results = retriever_module.query_vector_db(query_content)
-        context_text = "\n\n".join(results)
-    elif intent == "structured":
-        sql_used = query_content
-        results = retriever_module.query_relational_db(query_content)
-        context_text = f"Database returned: {results}"
-    else:
-        context_text = "Error: Could not determine intent."
+    return "I do not have that information."
 
-    # --- Step 3: Generate Answer (Gemini Call 2) ---
-    final_prompt = textwrap.dedent(f"""
-    You are the Club Knowledge Agent. Answer the user's question based ONLY on the context provided.
-
-    User Question: {user_question}
-    
-    Context:
-    {context_text}
-    
-    SQL Query Run (if any):
-    {sql_used if sql_used else 'N/A'}
-
-    Instructions:
-    1. If the context is a Database Result (e.g., `[(8,)]`), turn it into a natural sentence.
-       - If the result is empty or `[('',)]`, say "I do not have that information."
-    2. If the context is text, be helpful and summarize.
-    3. If the answer is not in the context, admit it. Do not hallucinate.
-
-    Final Answer:
-    """)
-
-    try:
-        final_response = generation_model.generate_content(final_prompt)
-        return final_response.text
-    except Exception as e:
-        return f"Error generating response: {e}"
-
+# ────────────────────────────────────────────────
+# CLI TEST
+# ────────────────────────────────────────────────
 if __name__ == "__main__":
-    print("--- Club Knowledge Agent Online ---")
+    print("✅ Club Knowledge Agent Ready")
     while True:
         user_input = input("\nYou: ")
-        if user_input.lower() in ["quit", "exit"]:
-            print("Goodbye!")
+        if user_input.lower() in {"exit", "quit"}:
             break
-        
-        response = handle_user_query(user_input)
-        print(f"Agent: {response}")
+        print("\nAgent:\n", handle_user_query(user_input))
