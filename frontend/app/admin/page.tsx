@@ -58,7 +58,7 @@ export default function AdminPage() {
 
     try {
       await axios.post(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/add-event`,
+        `http://localhost:8000/api/add-event`,
         formData,
         {
           headers: {
@@ -128,11 +128,10 @@ export default function AdminPage() {
         {/* STATUS MESSAGE */}
         {status.msg && (
           <div
-            className={`p-4 mb-6 rounded text-sm ${
-              status.type === "success"
+            className={`p-4 mb-6 rounded text-sm ${status.type === "success"
                 ? "bg-[rgba(0,255,170,0.15)] text-green-300 border border-green-500/40"
                 : "bg-[rgba(60,0,0,0.4)] text-red-400 border border-red-600/30"
-            }`}
+              }`}
           >
             {status.msg}
           </div>

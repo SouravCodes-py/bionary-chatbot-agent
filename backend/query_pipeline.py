@@ -76,7 +76,7 @@ def handle_user_query(question: str) -> str:
     # =====================================================
     # FULL REPORT (FIXED: NO LIMIT)
     # =====================================================
-    if "report" in q or "summary" in q:
+    if "report" in q or "summary" in q or ("list" in q and "all" in q):
         sql = """
         SELECT name_of_event, event_domain, date_of_event, venue, speakers
         FROM events

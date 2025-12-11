@@ -17,14 +17,16 @@ export default function ChatPage() {
     setAnswer("");
 
     try {
+      // Hardcoded URL to rule out env var issues
       const res = await axios.post(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/chat`,
+        `http://localhost:8000/api/chat`,
         { query }
       );
       setAnswer(res.data.answer);
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
-      setAnswer("Error connecting to the agent.");
+      // Show the actual error message on screen
+      setAnswer(`Error: ${error.message || "Unknown error"}. Check console for details.`);
     } finally {
       setLoading(false);
     }
@@ -37,7 +39,7 @@ export default function ChatPage() {
     >
       {/* TITLE */}
       <h1 className="text-4xl font-bold mb-2"
-          style={{ color: "var(--violet)", textShadow: "0 0 10px rgba(123,31,162,0.6)" }}>
+        style={{ color: "var(--violet)", textShadow: "0 0 10px rgba(123,31,162,0.6)" }}>
         Bionary Search Agent
       </h1>
 

@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from database import Base, engine, SessionLocal
 from models import User
 from auth import router as auth_router
+from sqlalchemy import text
 
 # ────────────────────────────────────────────────
 # LOAD ENV
@@ -143,6 +144,12 @@ def add_event_endpoint(
 # ────────────────────────────────────────────────
 # STARTUP
 # ────────────────────────────────────────────────
+# Enable pgvector extension if using Postgres
+if "sqlite" not in str(engine.url):
+    with engine.connect() as conn:
+        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        conn.commit()
+
 Base.metadata.create_all(bind=engine)
 create_default_user()
 
